@@ -1,0 +1,259 @@
+---
+title: "Aashika-Fish Dataset"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#Sys.setenv("CUDA_VISIBLE_DEVICES" = -1)
+```
+
+##Loading Libraries
+We started with loading the libraries we need to carry out the modelling and training of the model.
+
+
+```{r load_lib}
+
+if (!require(tfdatasets)) {
+  install.packages("tfdatasets")
+}
+if (!require(tidyverse)) {
+  install.packages("tidyverse")
+}
+if (!require(keras)) {
+  install.packages("keras")
+}
+if (!require(tensorflow)) {
+  install.packages("tensorflow")
+}
+if (!require(reticulate)) {
+  install.packages("reticulate")
+}
+#if (!require(pillow)) {
+#  install.packages("pillow")
+#}
+
+library(magick)
+library(tfdatasets)
+library(tidyverse)
+library(keras)
+library(tensorflow)
+library(reticulate)
+
+#tensorflow::install_tensorflow(extra_packages='pillow')
+tensorflow::install_tensorflow(extra_packages='SciPy')
+reticulate::py_config()
+tensorflow::install_tensorflow(extra_packages='Sequence')
+use_condaenv(condaenv = "r-reticulate")
+use_virtualenv(virtualenv = "r-reticulate")
+use_virtualenv(virtualenv = "python")
+
+
+tf_config()
+
+
+#Sys.setenv(RETICULATE_PYTHON="/usr/local/bin/python")
+```
+
+
+## Image Preparation
+We started with resizing the image and also moving 10% of the images in each class to a test folder. This image will be used to test our model after training.
+
+```{r variables}
+working_dir = getwd()
+main_dir = "data"
+data_dir = paste(main_dir, "Fish_Dataset",sep="/")
+print(data_dir)
+
+```
+
+##Resize Images
+
+```{r image_resize}
+resized_dir = "Fish_Dataset_resize"
+
+dir.create(file.path(data_dir), showWarnings = TRUE)
+
+fish_classes = list.dirs(path = "C:\\Users\\Admin\\Desktop\\ML and AI\\Fish_Dataset", full.names = F, recursive = F)
+
+for (fish_class in fish_classes){
+
+
+fishes = list.files(path = paste(data_dir,fish_class,sep="/"), full.names = F, recursive = F)
+
+dir.create(file.path(paste(main_dir, resized_dir,sep="/"),fish_class), showWarnings = FALSE)
+
+for (fish in fishes){
+	image = image_read(paste(data_dir,fish_class,fish,sep="/")) 
+	#print(image)
+	image <- image_resize(image, "128x128")
+	image_write(image, path = paste(main_dir, resized_dir,fish_class,fish,sep="/"), format = "png")
+}
+}
+```
+
+
+##Pick test Images
+
+```{r image_test}
+resize_data_dir = paste(main_dir, "Fish_Dataset_resize",sep="/")
+test_dir = "Fish_Dataset_test"
+
+dir.create(file.path(main_dir, test_dir), showWarnings = FALSE)
+
+fish_classes = list.dirs(path = resize_data_dir, full.names = F, recursive = F)
+
+for (fish_class in fish_classes){
+
+fishes = list.files(path = paste(resize_data_dir,fish_class,sep="/"), full.names = F, recursive = F)
+dir.create(file.path(paste(main_dir, test_dir,sep="/"),fish_class), showWarnings = FALSE)
+
+fish_count = length(fishes)
+test_size = as.integer(fish_count*0.1) #10%
+
+test_fishes = sample(fishes,test_size)
+
+move_file <- function(img){
+  file.rename( from = file.path(paste(working_dir,resize_data_dir,fish_class,sep="/"), img) ,
+               to = file.path(paste(working_dir,main_dir,test_dir,fish_class,sep="/"), img) )
+}
+
+lapply(test_fishes, move_file)
+
+}
+```
+
+
+##Load Data (Image generation for training and Validation)
+20% of the image data after removing the test images is used for validation and the rest for training.
+##DO NOT RUN AGAAAIN##
+```{r load_data}
+data_dir = "data/Fish_Dataset_resize"
+label_list <- dir(data_dir)
+output_n <- length(label_list)
+
+width <- 128
+height<- 128
+target_size <- c(width, height)
+rgb <- 3 #color channels
+
+train_data_gen <- image_data_generator(rescale = 1/255, 
+  validation_split = .2)
+
+
+train_images <- flow_images_from_directory(data_dir,
+  train_data_gen,
+  subset = 'training',
+  target_size = target_size,
+  class_mode = "categorical",
+  shuffle=T,
+  classes = label_list,
+  seed = 123)
+
+validation_images <- flow_images_from_directory(data_dir,
+ train_data_gen, 
+  subset = 'validation',
+  target_size = target_size,
+  class_mode = "categorical",
+  classes = label_list,
+  seed = 123)
+
+get_label <- function(file_path) {
+  parts <- tf$strings$split(file_path, "/")
+  parts[-2] %>% 
+    tf$equal(classes) %>% 
+    tf$cast(dtype = tf$float32)
+}
+
+#plot(as.raster(train_images[[1]][[1]][2,,,]))
+```
+
+
+```{r}
+model<-keras_model_sequential() %>%   
+  layer_conv_2d(filters = 32, kernel_size = c(3,3),activation = "relu",input_shape=c(128, 128, 3)) %>%
+  layer_max_pooling_2d(pool_size = c(2,2))%>%
+  layer_conv_2d(filters = 64, kernel_size = c(3,3),activation = "relu") %>%
+  layer_max_pooling_2d(pool_size = c(2,2))%>%
+  layer_conv_2d(filters = 64, kernel_size = c(3,3),activation = "relu")
+summary(model)
+
+model %>%
+  layer_flatten() %>%
+  layer_dense(units=128, activation ="relu") %>%
+  layer_dense(units=64, activation ="relu") %>%
+  layer_dense(units=9, activation ="softmax")
+  
+summary(model)
+
+```
+
+```{r}
+model %>% compile(
+  optimizer = "adam",
+  loss = "categorical_crossentropy",
+  metrics = "accuracy" 
+)
+```
+
+```{r}
+set.seed(009)
+
+history <- model %>% fit(
+  train_images,
+  steps_per_epoch = train_images$n %/% 32, 
+  epochs = 10, 
+  validation_data = validation_images,
+  validation_steps = validation_images$n %/% 32,
+  verbose = 2
+)
+
+#history <- model %>%
+#  fit(
+#    train_images,
+#    steps_per_epoch = train_images$n %/% batch_size,
+#    batch_size = 3,
+#   epochs = 20,
+#    validation_data = validation_images
+#    )
+```
+
+##Test dataset
+```{r}
+data_dir = "data/Fish_Dataset_test"
+label_list <- dir(data_dir)
+output_n <- length(label_list)
+
+width <- 128
+height<- 128
+target_size <- c(width, height)
+rgb <- 3 #color channels
+
+test_data_gen <- image_data_generator(rescale = 1/255)
+
+
+test_images <- flow_images_from_directory(data_dir,
+  test_data_gen,
+  #subset = 'training',
+  target_size = target_size,
+  class_mode = "categorical",
+  shuffle=T,
+  classes = label_list,
+  seed = 123)
+```
+
+```{r}
+#model %>% evaluate(model, test_images, steps = test_images$n %/% 32)
+
+model %>% evaluate_generator(test_images, 
+                     steps = test_images$n)
+#print(test_images$n)
+```
+
+```{r}
+getRowResult <- function(r){
+  which.max(r) - 1
+}
+predictions <- model %>% predict(test_images)
+predictions <- apply(predictions, 1, getRowResult)
+```
